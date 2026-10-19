@@ -22,6 +22,7 @@ one floating button away. Grown from the `acryl.blank` Blueprint.
 | `data/outlay.jsonl` | the books (one JSON object per line, git-ignored, the user's own data) |
 | `data/outlay.categories.json` | categories the user or the agent added (git-ignored) |
 | `data/outlay.budgets.json` | monthly budget per category, e.g. `{ "food": 300 }` (git-ignored) |
+| `data/outlay.recurring.json` | recurring rules: amount, note, category, day, start, lastPosted, active (git-ignored) |
 | `registry/blends/smrifat1411.outlay/` | the ready-to-PR Blends-registry entry (Blueprint + vendored plugin source + README) |
 | `scripts/sync-registry.mjs` | copies `plugins/outlay` into that entry and syncs its version; CI fails on drift |
 | `docs/PUBLISH.md` | how to push the app, (optionally) npm-publish the plugin, and open the registry PR |
@@ -55,22 +56,32 @@ One expense entry:
 - A **budget** is one positive amount per category per month: `{ "food": 300, "travel": 100 }`.
   The view joins it to what this calendar month spent, adding `spent`, `remaining` and `pct`
   per budgeted category. Setting an amount of 0 (or removing it) clears that budget.
+- A **recurring rule** posts itself: `{ id, amount, note, category, day, start, lastPosted, active }`.
+  `day` is 1-31 and clamps to the month's last day (31 in February = 28/29). `start` is the day
+  the rule was created, so a new rule never back-fills earlier months; its own day does post
+  immediately when that day is today. Every read (`payload`, the tools) first **catches up**:
+  months between `lastPosted` (or `start`) and now are posted. Posting is idempotent (entries
+  carry `recurring: <rule id>` and `scheduled: <date>`, and those pairs are skipped), so a second
+  read never double-posts and a deleted occurrence is not brought back. `pause` stops posting.
+  The catch-up writes happen on GET, not only on a mutation.
 
 ## Tools the agent can call
 
 `outlay_add`, `outlay_list` (shows ids and categories), `outlay_update`, `outlay_remove`,
-`outlay_categories` (`list` / `add` / `remove`), `outlay_budget` (`list` / `set` / `remove`).
+`outlay_categories` (`list` / `add` / `remove`), `outlay_budget` (`list` / `set` / `remove`),
+`outlay_recurring` (`list` / `add` / `remove` / `pause` / `resume`).
 
 ## HTTP routes used by the dashboard
 
 | Route | Method | Does |
 | --- | --- | --- |
-| `/api/outlay/entries` | GET | the whole view: currency, categories, entries, totals, byCategory, budgets, days |
+| `/api/outlay/entries` | GET | the whole view: currency, categories, entries, totals, byCategory, budgets, recurring, days |
 | `/api/outlay/entries` | POST | add one entry |
 | `/api/outlay/update` | POST | patch one entry by id (amount, note, category, ts) |
 | `/api/outlay/delete` | POST | delete one entry by id |
 | `/api/outlay/category` | POST | add a category (`name`) or remove one (`remove`) |
 | `/api/outlay/budget` | POST | set a monthly budget (`category`, `amount`) or remove one (`remove`) |
+| `/api/outlay/recurring` | POST | add a rule (`amount`, `note`, `category`, `day`), remove one (`remove`), or pause/resume one (`toggle`) |
 | `/api/outlay/export.csv` | GET | every entry as CSV (`id,date,time,amount,category,note`), oldest first |
 
 Every mutation answers with the same whole view, so the UI never has to guess.
@@ -80,19 +91,20 @@ Every mutation answers with the same whole view, so the UI never has to guess.
 Sticky top bar (name, tagline, month, currency, CSV download, refresh) → four KPI cards →
 quick-add form → last-7-days bars + category donut → **Budgets** card (a bar per budgeted
 category, green/amber/red by `pct`, amount editable in place, remove, and a "set a budget"
-form for categories without one) → filter toolbar (search, category, period) → entries
-grouped by day with inline edit and delete. A floating **Ask** button opens the assistant;
-the dashboard itself is registered as the `main` panel key `outlay` and the icon in
-`sidebar.panellist`, so the conversation stays optional.
+form for categories without one) → **Recurring** card (each rule's note, amount, day, next
+date; pause/resume and remove; an add form with note, amount, category and day) → filter
+toolbar (search, category, period) → entries grouped by day with inline edit and delete.
+A floating **Ask** button opens the assistant; the dashboard itself is registered as the
+`main` panel key `outlay` and the icon in `sidebar.panellist`, so the conversation stays optional.
 
 ## Known gaps / next steps
 
 - The floating button *opens* the assistant; it does not embed the chat. A truly docked chat needs
   the Electron advanced shell (`acryl-app-shell`, right column), not the Web upstream slots.
-- No recurring expenses or multi-currency. Removing a category leaves its budget behind (the
-  budget card then shows it with 0 spent); remove that budget separately.
+- No multi-currency. Removing a category leaves its budget behind (the budget card then shows it
+  with 0 spent); remove that budget separately.
 - No tests. The API was verified by hand and by a throwaway harness (GET, POST, update, delete,
-  category, budget set/remove/validation, CSV).
+  category, budget set/remove/validation, recurring add/catch-up/idempotence/pause/remove/validation, CSV).
 - The Blends-registry entry is **prepared and validated**, not listed: `registry/blends/smrifat1411.outlay/`
   (Blueprint `smrifat1411.outlay`, category finance) passes `blends-validate`, and `docs/PUBLISH.md`
   holds the exact `registry/index.json` object and PR steps. Listing is a human action: push this repo,

@@ -144,6 +144,18 @@ const CSS = `
 .ol-budget-add input { width:150px; }
 @media (max-width: 720px) { .ol-budget-row { grid-template-columns: minmax(74px, 96px) 1fr 104px 26px; gap:9px; }
   .ol-budget-amount input { width:62px; } }
+
+.ol-recurring-row { display:grid; grid-template-columns: minmax(0, 1fr) 110px 132px 54px; gap:14px; align-items:center;
+  padding:10px 0; border-bottom:1px solid var(--dsw-alias-border-l2, #eee); }
+.ol-recurring-row.paused { opacity:0.55; }
+.ol-recurring-main { min-width:0; }
+.ol-recurring-note { font-size:13px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ol-recurring-meta { font-size:11px; color: var(--dsw-alias-label-tertiary, #666); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ol-recurring-next { font-size:11px; color: var(--dsw-alias-label-tertiary, #666); text-align:right; white-space:nowrap; }
+.ol-recurring-row .ol-actions { opacity:1; }
+.ol-recurring-add input[type="number"] { width:92px; }
+@media (max-width: 720px) { .ol-recurring-row { grid-template-columns: minmax(0, 1fr) 84px 54px; }
+  .ol-recurring-next { display:none; } .ol-recurring-add input[type="number"] { width:74px; } }
 `
 
 function ensureStyles() {
@@ -184,6 +196,10 @@ function monthName() {
   return new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 }
 
+function shortDate(key) {
+  return new Date(`${key}T12:00:00`).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
+}
+
 function useBooks() {
   const [state, setState] = React.useState({ loading: true })
   const apply = React.useCallback((data) => setState({ loading: false, data }), [])
@@ -214,6 +230,9 @@ function useBooks() {
     removeCategory: (id) => send('/api/outlay/category', { remove: id }),
     setBudget: (category, amount) => send('/api/outlay/budget', { category, amount }),
     removeBudget: (category) => send('/api/outlay/budget', { remove: category }),
+    addRecurring: (rule) => send('/api/outlay/recurring', rule),
+    removeRecurring: (id) => send('/api/outlay/recurring', { remove: id }),
+    toggleRecurring: (id) => send('/api/outlay/recurring', { toggle: id }),
   }
 }
 
@@ -341,6 +360,68 @@ function Budgets({ rows, categories, currency, onSet, onRemove }) {
     error !== '' && h('div', { className: 'ol-error' }, error))
 }
 
+function Recurring({ rules, categories, currency, onAdd, onRemove, onToggle }) {
+  const [note, setNote] = React.useState('')
+  const [amount, setAmount] = React.useState('')
+  const [category, setCategory] = React.useState(categories.includes('bills') ? 'bills' : categories[0])
+  const [day, setDay] = React.useState('1')
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const failing = (cause) => setError(String(cause.message || cause))
+
+  const submit = (event) => {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError('')
+    Promise.resolve(onAdd({ amount: Number(amount), note, category, day: Number(day) }))
+      .then(() => { setNote(''); setAmount(''); setDay('1') })
+      .catch(failing)
+      .finally(() => setBusy(false))
+  }
+
+  const act = (promise) => { setError(''); Promise.resolve(promise).catch(failing) }
+
+  return h('section', { className: 'ol-card', style: { marginTop: 14 } },
+    h('div', { className: 'ol-head-row' },
+      h('div', { className: 'ol-h2' }, 'Recurring'),
+      h('div', { className: 'ol-muted' }, `monthly · ${rules.length} ${rules.length === 1 ? 'rule' : 'rules'}`)),
+    rules.length === 0
+      ? h('div', { className: 'ol-empty', style: { padding: '16px 12px' } },
+          'No recurring expenses. Rent or a subscription goes here once, and posts itself every month.')
+      : h('div', { className: 'ol-budget-rows' },
+          rules.map(rule => h('div', { key: rule.id, className: `ol-recurring-row${rule.active ? '' : ' paused'}` },
+            h('div', { className: 'ol-recurring-main' },
+              h('div', { className: 'ol-recurring-note', title: rule.note }, rule.note),
+              h('div', { className: 'ol-recurring-meta' }, `${titleOf(rule.category)} · day ${rule.day}${rule.active ? '' : ' · paused'}`)),
+            h('div', { className: 'ol-amount' }, money(rule.amount, currency)),
+            h('div', { className: 'ol-recurring-next' },
+              rule.active ? (rule.next ? `next ${shortDate(rule.next)}` : 'no next date') : 'paused'),
+            h('span', { className: 'ol-actions' },
+              h('button', {
+                type: 'button', className: 'ol-x', title: rule.active ? 'Pause' : 'Resume',
+                onClick: () => act(onToggle(rule.id)),
+              }, rule.active ? '\u275A\u275A' : '\u25B6'),
+              h('button', { type: 'button', className: 'ol-x', title: 'Remove', onClick: () => act(onRemove(rule.id)) }, '\u2715'))))),
+    h('form', { className: 'ol-budget-add ol-recurring-add', onSubmit: submit },
+      h('input', {
+        type: 'text', value: note, placeholder: 'What is it for?  e.g. rent', maxLength: 200,
+        onChange: e => setNote(e.target.value), required: true, 'aria-label': 'Recurring note',
+      }),
+      h('input', {
+        type: 'number', step: '0.01', min: '0.01', value: amount, placeholder: 'Monthly amount',
+        onChange: e => setAmount(e.target.value), required: true, 'aria-label': 'Recurring amount',
+      }),
+      h('select', { value: category, onChange: e => setCategory(e.target.value), 'aria-label': 'Recurring category' },
+        categories.map(id => h('option', { key: id, value: id }, titleOf(id)))),
+      h('input', {
+        type: 'number', min: '1', max: '31', step: '1', value: day, title: 'Day of the month to post',
+        onChange: e => setDay(e.target.value), required: true, 'aria-label': 'Day of month',
+      }),
+      h('button', { type: 'submit', className: 'ol-btn ol-btn-sm', disabled: busy }, busy ? 'Saving…' : 'Add rule')),
+    error !== '' && h('div', { className: 'ol-error' }, error))
+}
+
 function QuickAdd({ categories, onAdd, onAddCategory }) {
   const [amount, setAmount] = React.useState('')
   const [note, setNote] = React.useState('')
@@ -432,6 +513,7 @@ function Dashboard() {
   const totals = data ? data.totals : { today: 0, week: 0, month: 0, all: 0, count: 0 }
   const entries = data ? data.entries : []
   const budgets = data && Array.isArray(data.budgets) ? data.budgets : []
+  const recurring = data && Array.isArray(data.recurring) ? data.recurring : []
 
   const [search, setSearch] = React.useState('')
   const [category, setCategory] = React.useState('all')
@@ -546,6 +628,14 @@ function Dashboard() {
         currency,
         onSet: books.setBudget,
         onRemove: books.removeBudget,
+      }),
+      data && h(Recurring, {
+        rules: recurring,
+        categories,
+        currency,
+        onAdd: books.addRecurring,
+        onRemove: books.removeRecurring,
+        onToggle: books.toggleRecurring,
       }),
       data && h(Toolbar, {
         search, setSearch, category, setCategory, period, setPeriod, categories,
