@@ -1,6 +1,5 @@
-// outlay (host half): the agent's hands on the books, and the dashboard's own API.
-// Tools the model calls (outlay_add, outlay_list, outlay_remove) plus three read/write
-// routes the dashboard uses. Data is one append-only file: <app home>/data/outlay.jsonl
+// outlay (host half): the agent's hands on the books, and the dashboard's API.
+// Full CRUD over one append-only file, dynamic categories, and the tools the model calls.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -9,20 +8,51 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'outlay'
 export const inject = ['tools', 'webServer']
 
-export const CATEGORIES = ['food', 'travel', 'bills', 'shopping', 'health', 'fun', 'other']
+export const DEFAULT_CATEGORIES = ['food', 'travel', 'bills', 'shopping', 'health', 'fun', 'other']
 
 const MAX_BODY = 64 * 1024
 const MAX_NOTE = 200
+const MAX_CATEGORY = 24
 
 /** Where the books live: the app's own folder, never the plugin's code folder. */
+function homeOf(ctx) {
+  return ctx.get('appInstance')?.home ?? process.env.ACRYL_HOME ?? process.cwd()
+}
 function dataFile(ctx) {
-  const home = ctx.get('appInstance')?.home ?? process.env.ACRYL_HOME ?? process.cwd()
-  return join(home, 'data', 'outlay.jsonl')
+  return join(homeOf(ctx), 'data', 'outlay.jsonl')
+}
+function categoriesFile(ctx) {
+  return join(homeOf(ctx), 'data', 'outlay.categories.json')
 }
 
 function currencyOf(config) {
   const value = config?.currency
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : '$'
+}
+
+/** Categories are data, not code: the defaults, plus whatever the user or the agent added. */
+function readCategories(ctx) {
+  const file = categoriesFile(ctx)
+  const extra = []
+  if (existsSync(file)) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'))
+      if (Array.isArray(parsed)) for (const item of parsed) if (typeof item === 'string') extra.push(item)
+    } catch {
+      // A broken categories file falls back to the defaults.
+    }
+  }
+  return [...new Set([...DEFAULT_CATEGORIES, ...extra])]
+}
+
+function writeCategories(ctx, categories) {
+  const file = categoriesFile(ctx)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(categories, null, 2) + '\n')
+}
+
+function slugify(value) {
+  return String(value).trim().toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '').slice(0, MAX_CATEGORY)
 }
 
 function readEntries(ctx) {
@@ -51,22 +81,61 @@ function writeEntries(ctx, entries) {
   writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join('\n') + (entries.length === 0 ? '' : '\n'))
 }
 
-function addEntry(ctx, input) {
-  const amount = Number(input.amount)
+function cleanAmount(value) {
+  const amount = Number(value)
   if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be a positive number')
-  const note = String(input.note ?? '').trim().slice(0, MAX_NOTE)
+  return Math.round(amount * 100) / 100
+}
+
+function cleanNote(value) {
+  const note = String(value ?? '').trim().slice(0, MAX_NOTE)
   if (note === '') throw new Error('note is required')
-  const category = CATEGORIES.includes(String(input.category)) ? String(input.category) : 'other'
-  const entry = { id: randomUUID(), ts: new Date().toISOString(), amount: Math.round(amount * 100) / 100, note, category }
+  return note
+}
+
+function cleanCategory(value, categories) {
+  const category = slugify(value ?? '')
+  return categories.includes(category) ? category : 'other'
+}
+
+function addEntry(ctx, input) {
+  const categories = readCategories(ctx)
+  const entry = {
+    id: randomUUID(),
+    ts: new Date().toISOString(),
+    amount: cleanAmount(input.amount),
+    note: cleanNote(input.note),
+    category: cleanCategory(input.category, categories),
+  }
   const file = dataFile(ctx)
   mkdirSync(dirname(file), { recursive: true })
   appendFileSync(file, `${JSON.stringify(entry)}\n`)
   return entry
 }
 
+/** Patch one entry. Any of amount, note, category, and the date part of when. */
+function updateEntry(ctx, input) {
+  const id = String(input.id ?? '').trim()
+  if (id === '') throw new Error('id is required')
+  const entries = readEntries(ctx)
+  const target = entries.find(entry => entry.id === id || entry.id.startsWith(id))
+  if (target === undefined) throw new Error(`no entry matches ${id}`)
+  const categories = readCategories(ctx)
+  if (input.amount !== undefined) target.amount = cleanAmount(input.amount)
+  if (input.note !== undefined) target.note = cleanNote(input.note)
+  if (input.category !== undefined) target.category = cleanCategory(input.category, categories)
+  if (input.ts !== undefined) {
+    const when = new Date(String(input.ts))
+    if (Number.isNaN(when.getTime())) throw new Error('ts must be an ISO date')
+    target.ts = when.toISOString()
+  }
+  writeEntries(ctx, entries)
+  return target
+}
+
 function removeEntry(ctx, id) {
   const entries = readEntries(ctx)
-  const next = entries.filter(entry => entry.id !== id)
+  const next = entries.filter(entry => entry.id !== id && !entry.id.startsWith(String(id)))
   if (next.length === entries.length) throw new Error('no entry with that id')
   writeEntries(ctx, next)
   return next.length
@@ -147,20 +216,40 @@ function readJson(req) {
   })
 }
 
+/** One shape for every mutation: act, then answer with the whole view. */
+function mutate(req, res, reply, action) {
+  if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+  readJson(req)
+    .then((body) => {
+      try {
+        action(body)
+        sendJson(res, 200, reply())
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+      }
+    })
+    .catch(error => sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) }))
+}
+
 export function apply(ctx, config) {
   const currency = currencyOf(config)
-  const view = () => {
+  const payload = () => {
     const entries = readEntries(ctx)
-    return { currency, entries: entries.slice(-200), ...summary(entries) }
+    return {
+      currency,
+      categories: readCategories(ctx),
+      entries: entries.slice(-500),
+      ...summary(entries),
+    }
   }
 
   ctx.tools.register(defineTool({
     name: 'outlay_add',
-    description: 'Record one expense in the books. Call it once per amount the user mentions (200 taxi and 500 groceries = two calls).',
+    description: 'Record one expense. Call it once per amount the user mentions (200 taxi and 500 groceries = two calls).',
     parameters: {
-      amount: { type: 'number', required: true, description: 'Amount in the app currency, a positive number (e.g. 200)' },
-      note: { type: 'string', required: true, description: 'What it was for, in the user\'s own words (e.g. "taxi to office")' },
-      category: { type: 'string', description: `One of: ${CATEGORIES.join(', ')}. Guess from the note; use other when unsure.` },
+      amount: { type: 'number', required: true, description: 'Amount in the app currency, a positive number' },
+      note: { type: 'string', required: true, description: 'What it was for, in the user\'s own words' },
+      category: { type: 'string', description: 'Category id (see outlay_categories); guess from the note, use other when unsure' },
     },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute(args) {
@@ -171,7 +260,7 @@ export function apply(ctx, config) {
 
   ctx.tools.register(defineTool({
     name: 'outlay_list',
-    description: 'Read the books: recent expenses (with their ids) and the totals for today, this week and this month.',
+    description: 'Read the books: recent entries with their ids, totals, and the category ids that exist.',
     parameters: {
       limit: { type: 'number', description: 'How many recent entries to show (default 15, max 50)' },
     },
@@ -179,64 +268,99 @@ export function apply(ctx, config) {
     async execute(args) {
       const limit = Math.min(Math.max(Number(args.limit) || 15, 1), 50)
       const entries = readEntries(ctx)
-      if (entries.length === 0) return 'The books are empty. Tell me an expense and I will add it.'
+      const categories = `Categories: ${readCategories(ctx).join(', ')}`
+      if (entries.length === 0) return `The books are empty. Tell me an expense and I will add it.\n${categories}`
       const recent = entries.slice(-limit).reverse()
         .map(entry => `${dayKey(entry.ts)}  ${money(entry.amount, currency).padStart(9)}  ${entry.category.padEnd(9)} ${entry.note}  [${entry.id.slice(0, 8)}]`)
-      return [brief(entries, currency), '', `Last ${recent.length}:`, ...recent].join('\n')
+      return [brief(entries, currency), categories, '', `Last ${recent.length}:`, ...recent].join('\n')
+    },
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'outlay_update',
+    description: 'Fix one entry: change its amount, note, category or date. The id is the one outlay_list shows.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Entry id, or its first 8 characters' },
+      amount: { type: 'number', description: 'New amount' },
+      note: { type: 'string', description: 'New note' },
+      category: { type: 'string', description: 'New category id' },
+      ts: { type: 'string', description: 'New date, ISO format (e.g. 2026-10-19T18:40:00.000Z)' },
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args) {
+      const entry = updateEntry(ctx, args)
+      return `Updated: ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${brief(readEntries(ctx), currency)}`
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'outlay_remove',
-    description: 'Delete one wrong expense by the id shown in outlay_list (its first 8 characters are enough).',
+    description: 'Delete one wrong entry by the id shown in outlay_list (the first 8 characters are enough).',
     parameters: {
       id: { type: 'string', required: true, description: 'The entry id, or its first 8 characters' },
     },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute(args) {
-      const wanted = String(args.id ?? '').trim()
-      if (wanted === '') throw new Error('id is required')
-      const match = readEntries(ctx).find(entry => entry.id === wanted || entry.id.startsWith(wanted))
-      if (match === undefined) throw new Error(`no entry matches ${wanted}`)
+      const id = String(args.id ?? '').trim()
+      if (id === '') throw new Error('id is required')
+      const match = readEntries(ctx).find(entry => entry.id === id || entry.id.startsWith(id))
+      if (match === undefined) throw new Error(`no entry matches ${id}`)
       removeEntry(ctx, match.id)
       return `Removed ${money(match.amount, currency)} (${match.category}) - ${match.note}\n${brief(readEntries(ctx), currency)}`
     },
   }))
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: '/api/outlay/entries',
-    handler: (req, res) => {
-      if (req.method === 'GET') return sendJson(res, 200, view())
-      if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST' })
-      readJson(req)
-        .then((body) => {
-          try {
-            addEntry(ctx, body)
-            sendJson(res, 200, view())
-          } catch (error) {
-            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
-          }
-        })
-        .catch(error => sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) }))
+  ctx.tools.register(defineTool({
+    name: 'outlay_categories',
+    description: 'Manage categories: action "list", "add" with a name, or "remove" with an id (defaults cannot be removed).',
+    parameters: {
+      action: { type: 'string', required: true, description: 'list | add | remove' },
+      name: { type: 'string', description: 'Category name for add' },
+      id: { type: 'string', description: 'Category id for remove' },
     },
-  }), 'outlay: entries route')
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args) {
+      const action = String(args.action ?? 'list')
+      const current = readCategories(ctx)
+      if (action === 'add') {
+        const id = slugify(args.name ?? '')
+        if (id === '') throw new Error('name is required')
+        if (!current.includes(id)) writeCategories(ctx, [...current, id])
+        return `Categories: ${readCategories(ctx).join(', ')}`
+      }
+      if (action === 'remove') {
+        const id = slugify(args.id ?? '')
+        if (DEFAULT_CATEGORIES.includes(id)) throw new Error(`${id} is a default category and stays`)
+        writeCategories(ctx, current.filter(category => category !== id))
+        return `Categories: ${readCategories(ctx).join(', ')}`
+      }
+      return `Categories: ${current.join(', ')}`
+    },
+  }))
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: '/api/outlay/delete',
-    handler: (req, res) => {
-      if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
-      readJson(req)
-        .then((body) => {
-          try {
-            removeEntry(ctx, String(body.id ?? ''))
-            sendJson(res, 200, view())
-          } catch (error) {
-            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
-          }
-        })
-        .catch(error => sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) }))
-    },
-  }), 'outlay: delete route')
+  const routes = [
+    ['/api/outlay/entries', (req, res) => {
+      if (req.method === 'GET') return sendJson(res, 200, payload())
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST' })
+      mutate(req, res, payload, (body) => addEntry(ctx, body))
+    }],
+    ['/api/outlay/update', (req, res) => mutate(req, res, payload, (body) => updateEntry(ctx, body))],
+    ['/api/outlay/delete', (req, res) => mutate(req, res, payload, (body) => removeEntry(ctx, String(body.id ?? '')))],
+    ['/api/outlay/category', (req, res) => mutate(req, res, payload, (body) => {
+      const current = readCategories(ctx)
+      if (body.remove !== undefined) {
+        const id = slugify(body.remove)
+        if (DEFAULT_CATEGORIES.includes(id)) throw new Error(`${id} is a default category and stays`)
+        writeCategories(ctx, current.filter(category => category !== id))
+        return
+      }
+      const id = slugify(body.name ?? body.id ?? '')
+      if (id === '') throw new Error('name is required')
+      if (!current.includes(id)) writeCategories(ctx, [...current, id])
+    })],
+  ]
+
+  for (const [path, handler] of routes) {
+    ctx.effect(() => ctx.webServer.register({ kind: 'exact', path, handler }), `outlay: ${path}`)
+  }
 }
