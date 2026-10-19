@@ -6,8 +6,8 @@ metadata:
   name: Outlay
   version: 0.1.0
   description: Say what you spent; the agent keeps the books. Outlay, grown from acryl.blank.
-  license: Proprietary
-  visibility: private
+  license: MIT
+  visibility: public
 spec:
   runtime: cordis
   lineage:
