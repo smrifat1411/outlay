@@ -21,6 +21,7 @@ one floating button away. Grown from the `acryl.blank` Blueprint.
 | `plugins/outlay/cordis.patch.yml` | how the plugin row is inserted, and `currency: "$"` |
 | `data/outlay.jsonl` | the books (one JSON object per line, git-ignored, the user's own data) |
 | `data/outlay.categories.json` | categories the user or the agent added (git-ignored) |
+| `data/outlay.budgets.json` | monthly budget per category, e.g. `{ "food": 300 }` (git-ignored) |
 | `AGENTS.md` | the conventions the in-app builder agent follows |
 
 ## Run it
@@ -48,28 +49,35 @@ One expense entry:
 - Categories are data, not code: `DEFAULT_CATEGORIES` plus whatever was added at runtime.
   Defaults cannot be removed.
 - Totals: today, this week (from Monday), this month, all time; per category; last seven days.
+- A **budget** is one positive amount per category per month: `{ "food": 300, "travel": 100 }`.
+  The view joins it to what this calendar month spent, adding `spent`, `remaining` and `pct`
+  per budgeted category. Setting an amount of 0 (or removing it) clears that budget.
 
 ## Tools the agent can call
 
 `outlay_add`, `outlay_list` (shows ids and categories), `outlay_update`, `outlay_remove`,
-`outlay_categories` (`list` / `add` / `remove`).
+`outlay_categories` (`list` / `add` / `remove`), `outlay_budget` (`list` / `set` / `remove`).
 
 ## HTTP routes used by the dashboard
 
 | Route | Method | Does |
 | --- | --- | --- |
-| `/api/outlay/entries` | GET | the whole view: currency, categories, entries, totals, byCategory, days |
+| `/api/outlay/entries` | GET | the whole view: currency, categories, entries, totals, byCategory, budgets, days |
 | `/api/outlay/entries` | POST | add one entry |
 | `/api/outlay/update` | POST | patch one entry by id (amount, note, category, ts) |
 | `/api/outlay/delete` | POST | delete one entry by id |
 | `/api/outlay/category` | POST | add a category (`name`) or remove one (`remove`) |
+| `/api/outlay/budget` | POST | set a monthly budget (`category`, `amount`) or remove one (`remove`) |
+| `/api/outlay/export.csv` | GET | every entry as CSV (`id,date,time,amount,category,note`), oldest first |
 
 Every mutation answers with the same whole view, so the UI never has to guess.
 
 ## UI today
 
-Sticky top bar (name, tagline, month, currency, refresh) → four KPI cards → quick-add form →
-last-7-days bars + category donut → filter toolbar (search, category, period) → entries
+Sticky top bar (name, tagline, month, currency, CSV download, refresh) → four KPI cards →
+quick-add form → last-7-days bars + category donut → **Budgets** card (a bar per budgeted
+category, green/amber/red by `pct`, amount editable in place, remove, and a "set a budget"
+form for categories without one) → filter toolbar (search, category, period) → entries
 grouped by day with inline edit and delete. A floating **Ask** button opens the assistant;
 the dashboard itself is registered as the `main` panel key `outlay` and the icon in
 `sidebar.panellist`, so the conversation stays optional.
@@ -78,7 +86,9 @@ the dashboard itself is registered as the `main` panel key `outlay` and the icon
 
 - The floating button *opens* the assistant; it does not embed the chat. A truly docked chat needs
   the Electron advanced shell (`acryl-app-shell`, right column), not the Web upstream slots.
-- No budgets, recurring expenses, export (CSV), or multi-currency.
-- No tests. The API was verified by hand (GET, POST, update, delete, category, validation 400).
+- No recurring expenses or multi-currency. Removing a category leaves its budget behind (the
+  budget card then shows it with 0 spent); remove that budget separately.
+- No tests. The API was verified by hand and by a throwaway harness (GET, POST, update, delete,
+  category, budget set/remove/validation, CSV).
 - Not listed in the official Blends registry yet: that needs the plugin published to npm and
   a `registry/blends/app.outlay/blend.yaml` pull request to `acrylblends.github.io`.

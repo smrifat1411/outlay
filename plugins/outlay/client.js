@@ -118,6 +118,32 @@ const CSS = `
   background: var(--acryl-accent, #0b7285); color:#fff; font-size:13px; }
 .ol-fab-hint { font-size:11px; font-weight:400; color: var(--dsw-alias-label-tertiary, #666); }
 @media (max-width: 720px) { .ol-row { grid-template-columns: 52px 1fr 92px 40px; } .ol-row .ol-chip { display:none; } .ol-fab-hint { display:none; } }
+
+.ol-export { display:inline-flex; align-items:center; gap:7px; padding:8px 13px; border-radius:10px;
+  border:1px solid var(--dsw-alias-border-l3, #d8d8d8); background:transparent; color:inherit;
+  font-size:12px; font-weight:600; cursor:pointer; text-decoration:none; white-space:nowrap; }
+.ol-export:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05)); }
+
+.ol-budget-rows { display:flex; flex-direction:column; margin-top:8px; }
+.ol-budget-row { display:grid; grid-template-columns: minmax(96px, 140px) 1fr 118px 30px; gap:14px; align-items:center;
+  padding:9px 0; border-bottom:1px solid var(--dsw-alias-border-l2, #eee); }
+.ol-budget-name { font-size:13px; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ol-track { height:9px; border-radius:999px; background: var(--dsw-alias-border-l2, #eee); overflow:hidden; }
+.ol-fill { height:100%; border-radius:999px; min-width:2px; background: var(--acryl-accent, #0b7285); transition: width 0.25s ease; }
+.ol-fill.warn { background: var(--dsw-alias-state-warning-primary, #f08c00); }
+.ol-fill.over { background: var(--dsw-alias-state-error-primary, #d9480f); }
+.ol-budget-amount { display:flex; align-items:center; justify-content:flex-end; gap:5px;
+  font-size:12px; font-variant-numeric:tabular-nums; color: var(--dsw-alias-label-secondary, #444); white-space:nowrap; }
+.ol-budget-amount input { width:74px; padding:5px 7px; border-radius:7px; font-size:12px; text-align:right;
+  border:1px solid var(--dsw-alias-border-l3, #d8d8d8); background: var(--dsw-alias-bg-layer-1, #fff); color:inherit; outline:none; }
+.ol-budget-amount input:focus { border-color: var(--acryl-accent, #0b7285);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--acryl-accent, #0b7285) 16%, transparent); }
+.ol-budget-add { display:flex; gap:10px; align-items:center; margin-top:14px; flex-wrap:wrap; }
+.ol-budget-add select, .ol-budget-add input { padding:9px 11px; border-radius:9px; font-size:12px;
+  border:1px solid var(--dsw-alias-border-l3, #d8d8d8); background: var(--dsw-alias-bg-layer-1, #fff); color:inherit; outline:none; }
+.ol-budget-add input { width:150px; }
+@media (max-width: 720px) { .ol-budget-row { grid-template-columns: minmax(74px, 96px) 1fr 104px 26px; gap:9px; }
+  .ol-budget-amount input { width:62px; } }
 `
 
 function ensureStyles() {
@@ -186,6 +212,8 @@ function useBooks() {
     remove: (id) => send('/api/outlay/delete', { id }),
     addCategory: (name) => send('/api/outlay/category', { name }),
     removeCategory: (id) => send('/api/outlay/category', { remove: id }),
+    setBudget: (category, amount) => send('/api/outlay/budget', { category, amount }),
+    removeBudget: (category) => send('/api/outlay/budget', { remove: category }),
   }
 }
 
@@ -234,6 +262,83 @@ function Donut({ byCategory, currency, total }) {
           h('span', { className: 'ol-dot', style: { background: PALETTE[index % PALETTE.length] } }),
           h('span', null, titleOf(category)),
           h('span', { className: 'ol-legend-amount' }, money(amount, currency)))))))
+}
+
+function Budgets({ rows, categories, currency, onSet, onRemove }) {
+  const [chosen, setChosen] = React.useState('')
+  const [amount, setAmount] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const unbudgeted = categories.filter(id => !rows.some(row => row.category === id))
+  const draft = chosen === '' || !unbudgeted.includes(chosen) ? (unbudgeted[0] ?? '') : chosen
+  const failing = (cause) => setError(String(cause.message || cause))
+
+  const submit = (event) => {
+    event.preventDefault()
+    if (busy || draft === '' || amount.trim() === '') return
+    setBusy(true)
+    setError('')
+    Promise.resolve(onSet(draft, Number(amount)))
+      .then(() => { setAmount(''); setChosen('') })
+      .catch(failing)
+      .finally(() => setBusy(false))
+  }
+
+  const commit = (row, value) => {
+    const next = Number(value)
+    if (!Number.isFinite(next) || next <= 0 || next === row.amount) return
+    setError('')
+    Promise.resolve(onSet(row.category, next)).catch(failing)
+  }
+
+  const over = rows.filter(row => row.remaining < 0)
+  const left = rows.reduce((sum, row) => sum + row.remaining, 0)
+
+  return h('section', { className: 'ol-card', style: { marginTop: 14 } },
+    h('div', { className: 'ol-head-row' },
+      h('div', { className: 'ol-h2' }, 'Budgets'),
+      h('div', { className: 'ol-muted' }, `monthly · ${monthName()}`)),
+    rows.length === 0
+      ? h('div', { className: 'ol-empty', style: { padding: '16px 12px' } },
+          'No budgets yet. Set one below and the bar fills as the month spends.')
+      : h('div', { className: 'ol-budget-rows' },
+          rows.map((row) => {
+            const state = row.pct > 1 ? ' over' : row.pct >= 0.8 ? ' warn' : ''
+            return h('div', { key: row.category, className: 'ol-budget-row' },
+              h('div', { className: 'ol-budget-name', title: titleOf(row.category) }, titleOf(row.category)),
+              h('div', { className: 'ol-track', title: `${money(row.spent, currency)} of ${money(row.amount, currency)}` },
+                h('div', { className: `ol-fill${state}`, style: { width: `${Math.max(Math.min(row.pct, 1) * 100, 2)}%` } })),
+              h('div', { className: 'ol-budget-amount' },
+                money(row.spent, currency), h('span', { className: 'ol-muted' }, '/'),
+                h('input', {
+                  key: `${row.category}:${row.amount}`,
+                  type: 'number', step: '0.01', min: '0.01',
+                  defaultValue: String(row.amount),
+                  'aria-label': `Monthly budget for ${row.category}`,
+                  onBlur: e => commit(row, e.target.value),
+                  onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } },
+                })),
+              h('button', {
+                type: 'button', className: 'ol-x', title: 'Remove budget',
+                onClick: () => { setError(''); Promise.resolve(onRemove(row.category)).catch(failing) },
+              }, '\u2715'))
+          })),
+    rows.length > 0 && h('div', { className: 'ol-muted', style: { marginTop: 10 } },
+      over.length > 0
+        ? `Over budget: ${over.map(row => `${titleOf(row.category)} by ${money(-row.remaining, currency)}`).join(', ')}`
+        : `Left this month: ${money(left, currency)}`),
+    unbudgeted.length > 0 && h('form', { className: 'ol-budget-add', onSubmit: submit },
+      h('select', { value: draft, onChange: e => setChosen(e.target.value), 'aria-label': 'Budget category' },
+        unbudgeted.map(id => h('option', { key: id, value: id }, titleOf(id)))),
+      h('input', {
+        type: 'number', step: '0.01', min: '0.01', value: amount,
+        placeholder: 'Monthly amount', onChange: e => setAmount(e.target.value),
+        required: true, 'aria-label': 'Monthly budget amount',
+      }),
+      h('button', { type: 'submit', className: 'ol-btn ol-btn-sm', disabled: busy }, busy ? 'Saving…' : 'Set budget')),
+    rows.length > 0 && unbudgeted.length === 0 && h('div', { className: 'ol-muted', style: { marginTop: 10 } },
+      'Every category has a budget. Add a category to budget more.'),
+    error !== '' && h('div', { className: 'ol-error' }, error))
 }
 
 function QuickAdd({ categories, onAdd, onAddCategory }) {
@@ -326,6 +431,7 @@ function Dashboard() {
   const categories = data ? data.categories : ['other']
   const totals = data ? data.totals : { today: 0, week: 0, month: 0, all: 0, count: 0 }
   const entries = data ? data.entries : []
+  const budgets = data && Array.isArray(data.budgets) ? data.budgets : []
 
   const [search, setSearch] = React.useState('')
   const [category, setCategory] = React.useState('all')
@@ -415,6 +521,12 @@ function Dashboard() {
           h('p', { className: 'ol-sub' }, 'Say what you spent. The books keep themselves.')),
         h('span', { className: 'ol-pill' }, monthName()),
         h('span', { className: 'ol-pill' }, `in ${currency}`),
+        h('a', {
+          className: 'ol-export',
+          href: '/api/outlay/export.csv',
+          download: `outlay-${today}.csv`,
+          title: 'Download every entry as a CSV file',
+        }, '\u2913 CSV'),
         h('button', { type: 'button', className: 'ol-iconbtn', title: 'Refresh', onClick: books.reload }, '\u21BB')),
       books.state.loading && h('div', { className: 'ol-muted' }, 'Loading…'),
       books.state.error && h('div', { className: 'ol-error' }, `Could not load: ${books.state.error}`),
@@ -428,6 +540,13 @@ function Dashboard() {
       data && h('div', { className: 'ol-split' },
         h(WeekChart, { days: data.days, currency }),
         h(Donut, { byCategory: data.byCategory, currency, total: totals.all })),
+      data && h(Budgets, {
+        rows: budgets,
+        categories,
+        currency,
+        onSet: books.setBudget,
+        onRemove: books.removeBudget,
+      }),
       data && h(Toolbar, {
         search, setSearch, category, setCategory, period, setPeriod, categories,
         shown: filtered.length, total: filteredTotal, currency,

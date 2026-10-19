@@ -24,6 +24,9 @@ function dataFile(ctx) {
 function categoriesFile(ctx) {
   return join(homeOf(ctx), 'data', 'outlay.categories.json')
 }
+function budgetsFile(ctx) {
+  return join(homeOf(ctx), 'data', 'outlay.budgets.json')
+}
 
 function currencyOf(config) {
   const value = config?.currency
@@ -49,6 +52,33 @@ function writeCategories(ctx, categories) {
   const file = categoriesFile(ctx)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(categories, null, 2) + '\n')
+}
+
+/** Monthly budget per category: `{ food: 300, travel: 100 }`. Absent file means no budgets. */
+function readBudgets(ctx) {
+  const file = budgetsFile(ctx)
+  if (!existsSync(file)) return {}
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    const budgets = {}
+    for (const [category, amount] of Object.entries(parsed)) {
+      const value = Number(amount)
+      if (typeof category === 'string' && category !== '' && Number.isFinite(value) && value > 0) {
+        budgets[category] = Math.round(value * 100) / 100
+      }
+    }
+    return budgets
+  } catch {
+    // A broken budgets file means no budgets, never a crash.
+    return {}
+  }
+}
+
+function writeBudgets(ctx, budgets) {
+  const file = budgetsFile(ctx)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(budgets, null, 2) + '\n')
 }
 
 function slugify(value) {
@@ -146,6 +176,30 @@ function dayKey(date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** One CSV field: quoted only when it must be, with embedded quotes doubled. */
+function csvField(value) {
+  const text = String(value ?? '')
+  return /[",\n\r]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text
+}
+
+/** The whole books as CSV, oldest first, ready for a spreadsheet. */
+function toCsv(entries) {
+  const lines = ['id,date,time,amount,category,note']
+  const ordered = entries.slice().sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+  for (const entry of ordered) {
+    const when = new Date(entry.ts ?? Date.now())
+    lines.push([
+      entry.id,
+      dayKey(when),
+      when.toTimeString().slice(0, 8),
+      Number(entry.amount).toFixed(2),
+      entry.category ?? 'other',
+      entry.note ?? '',
+    ].map(csvField).join(','))
+  }
+  return `${lines.join('\n')}\n`
+}
+
 /** Everything the dashboard reads: totals, per-category, and the last seven days. */
 function summary(entries) {
   const now = new Date()
@@ -156,15 +210,18 @@ function summary(entries) {
   const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   const totals = { today: 0, week: 0, month: 0, all: 0, count: entries.length }
   const byCategory = {}
+  const monthByCategory = {}
   const byDay = {}
   for (const entry of entries) {
     const key = dayKey(entry.ts ?? Date.now())
     totals.all += entry.amount
     if (key === today) totals.today += entry.amount
     if (key >= weekStart) totals.week += entry.amount
-    if (key.startsWith(monthStart)) totals.month += entry.amount
+    const isThisMonth = key.startsWith(monthStart)
+    if (isThisMonth) totals.month += entry.amount
     const category = typeof entry.category === 'string' && entry.category !== '' ? entry.category : 'other'
     byCategory[category] = (byCategory[category] ?? 0) + entry.amount
+    if (isThisMonth) monthByCategory[category] = (monthByCategory[category] ?? 0) + entry.amount
     byDay[key] = (byDay[key] ?? 0) + entry.amount
   }
   const days = []
@@ -174,7 +231,25 @@ function summary(entries) {
     const key = dayKey(d)
     days.push({ day: key, amount: byDay[key] ?? 0 })
   }
-  return { totals, byCategory, days }
+  return { totals, byCategory, monthByCategory, days }
+}
+
+/** The budgets joined to what this month actually spent: one row per budgeted category. */
+function budgetRows(ctx, entries) {
+  const budgets = readBudgets(ctx)
+  const { monthByCategory } = summary(entries)
+  return Object.entries(budgets)
+    .map(([category, amount]) => {
+      const spent = Math.round((monthByCategory[category] ?? 0) * 100) / 100
+      return {
+        category,
+        amount,
+        spent,
+        remaining: Math.round((amount - spent) * 100) / 100,
+        pct: Math.round((spent / amount) * 1000) / 1000,
+      }
+    })
+    .sort((a, b) => b.pct - a.pct)
 }
 
 function money(amount, currency) {
@@ -182,15 +257,23 @@ function money(amount, currency) {
   return `${currency}${rounded.toLocaleString('en-US')}`
 }
 
-function brief(entries, currency) {
+function brief(entries, currency, budgets = []) {
   const { totals, byCategory } = summary(entries)
   const parts = Object.entries(byCategory)
     .sort((a, b) => b[1] - a[1])
     .map(([category, amount]) => `${category} ${money(amount, currency)}`)
-  return [
+  const lines = [
     `Today ${money(totals.today, currency)} | this week ${money(totals.week, currency)} | this month ${money(totals.month, currency)}`,
     parts.length === 0 ? 'No entries yet.' : `By category: ${parts.join(', ')}`,
-  ].join('\n')
+  ]
+  if (budgets.length > 0) {
+    const shown = budgets.map((row) => {
+      const head = `${row.category} ${money(row.spent, currency)}/${money(row.amount, currency)}`
+      return row.remaining < 0 ? `${head} (over by ${money(-row.remaining, currency)})` : `${head} (${Math.round(row.pct * 100)}%)`
+    })
+    lines.push(`Budgets this month: ${shown.join(', ')}`)
+  }
+  return lines.join('\n')
 }
 
 function sendJson(res, status, value) {
@@ -239,8 +322,14 @@ export function apply(ctx, config) {
       currency,
       categories: readCategories(ctx),
       entries: entries.slice(-500),
+      budgets: budgetRows(ctx, entries),
       ...summary(entries),
     }
+  }
+  /** The one-paragraph answer the agent sees after every mutation. */
+  const summaryText = () => {
+    const entries = readEntries(ctx)
+    return brief(entries, currency, budgetRows(ctx, entries))
   }
 
   ctx.tools.register(defineTool({
@@ -254,7 +343,7 @@ export function apply(ctx, config) {
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute(args) {
       const entry = addEntry(ctx, args)
-      return `Saved ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${brief(readEntries(ctx), currency)}`
+      return `Saved ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${summaryText()}`
     },
   }))
 
@@ -272,7 +361,7 @@ export function apply(ctx, config) {
       if (entries.length === 0) return `The books are empty. Tell me an expense and I will add it.\n${categories}`
       const recent = entries.slice(-limit).reverse()
         .map(entry => `${dayKey(entry.ts)}  ${money(entry.amount, currency).padStart(9)}  ${entry.category.padEnd(9)} ${entry.note}  [${entry.id.slice(0, 8)}]`)
-      return [brief(entries, currency), categories, '', `Last ${recent.length}:`, ...recent].join('\n')
+      return [brief(entries, currency, budgetRows(ctx, entries)), categories, '', `Last ${recent.length}:`, ...recent].join('\n')
     },
   }))
 
@@ -289,7 +378,7 @@ export function apply(ctx, config) {
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
     async execute(args) {
       const entry = updateEntry(ctx, args)
-      return `Updated: ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${brief(readEntries(ctx), currency)}`
+      return `Updated: ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${summaryText()}`
     },
   }))
 
@@ -306,7 +395,7 @@ export function apply(ctx, config) {
       const match = readEntries(ctx).find(entry => entry.id === id || entry.id.startsWith(id))
       if (match === undefined) throw new Error(`no entry matches ${id}`)
       removeEntry(ctx, match.id)
-      return `Removed ${money(match.amount, currency)} (${match.category}) - ${match.note}\n${brief(readEntries(ctx), currency)}`
+      return `Removed ${money(match.amount, currency)} (${match.category}) - ${match.note}\n${summaryText()}`
     },
   }))
 
@@ -338,6 +427,66 @@ export function apply(ctx, config) {
     },
   }))
 
+  ctx.tools.register(defineTool({
+    name: 'outlay_budget',
+    description: 'Monthly budgets per category: action "list" shows each budget and what this month spent of it; "set" needs category and amount; "remove" needs category. Setting a budget to 0 removes it.',
+    parameters: {
+      action: { type: 'string', required: true, description: 'list | set | remove' },
+      category: { type: 'string', description: 'Category id (see outlay_categories)' },
+      amount: { type: 'number', description: 'Monthly budget for set, in the app currency' },
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args) {
+      const action = String(args.action ?? 'list')
+      const budgets = readBudgets(ctx)
+      if (action === 'set') {
+        const category = slugify(args.category ?? '')
+        const categories = readCategories(ctx)
+        if (category === '') throw new Error('category is required')
+        if (!categories.includes(category)) throw new Error(`unknown category ${category}; categories: ${categories.join(', ')}`)
+        const amount = Number(args.amount)
+        if (!Number.isFinite(amount)) throw new Error('amount must be a number')
+        if (amount <= 0) delete budgets[category]
+        else budgets[category] = Math.round(amount * 100) / 100
+        writeBudgets(ctx, budgets)
+      } else if (action === 'remove') {
+        const category = slugify(args.category ?? '')
+        if (category === '') throw new Error('category is required')
+        delete budgets[category]
+        writeBudgets(ctx, budgets)
+      }
+      const rows = budgetRows(ctx, readEntries(ctx))
+      const unbudgeted = readCategories(ctx).filter(category => !rows.some(row => row.category === category))
+      const lines = rows.length === 0
+        ? ['No budgets set.']
+        : [`Budgets this month (${new Date().toLocaleDateString('en-US', { month: 'long' })}):`].concat(rows.map((row) => {
+            const head = `- ${row.category}: spent ${money(row.spent, currency)} of ${money(row.amount, currency)}`
+            return row.remaining < 0 ? `${head} - OVER by ${money(-row.remaining, currency)}` : `${head} - ${money(row.remaining, currency)} left (${Math.round(row.pct * 100)}%)`
+          }))
+      if (unbudgeted.length > 0) lines.push(`No budget: ${unbudgeted.join(', ')}`)
+      return lines.join('\n')
+    },
+  }))
+
+  /** The budget route: set a category's monthly amount, or delete it. */
+  const setBudget = (body) => {
+    const budgets = readBudgets(ctx)
+    if (body.remove !== undefined) {
+      const category = slugify(body.remove)
+      delete budgets[category]
+      writeBudgets(ctx, budgets)
+      return
+    }
+    const category = slugify(body.category ?? '')
+    if (category === '') throw new Error('category is required')
+    if (!readCategories(ctx).includes(category)) throw new Error(`unknown category ${category}`)
+    const amount = Number(body.amount)
+    if (!Number.isFinite(amount)) throw new Error('amount must be a number')
+    if (amount <= 0) delete budgets[category]
+    else budgets[category] = Math.round(amount * 100) / 100
+    writeBudgets(ctx, budgets)
+  }
+
   const routes = [
     ['/api/outlay/entries', (req, res) => {
       if (req.method === 'GET') return sendJson(res, 200, payload())
@@ -358,6 +507,16 @@ export function apply(ctx, config) {
       if (id === '') throw new Error('name is required')
       if (!current.includes(id)) writeCategories(ctx, [...current, id])
     })],
+    ['/api/outlay/budget', (req, res) => mutate(req, res, payload, setBudget)],
+    ['/api/outlay/export.csv', (req, res) => {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      res.writeHead(200, {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="outlay-${dayKey(new Date())}.csv"`,
+        'cache-control': 'no-store',
+      })
+      res.end(toCsv(readEntries(ctx)))
+    }],
   ]
 
   for (const [path, handler] of routes) {
