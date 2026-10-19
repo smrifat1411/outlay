@@ -1,0 +1,33 @@
+# Outlay: what this app is (name, brand, what it grew from). Edit it and restart. Format: blends.acryl.dev/v1alpha1.
+apiVersion: blends.acryl.dev/v1alpha1
+kind: Blend
+metadata:
+  id: app.outlay
+  name: Outlay
+  version: 0.1.0
+  description: Say what you spent; the agent keeps the books. Outlay, grown from acryl.blank.
+  license: Proprietary
+  visibility: private
+spec:
+  runtime: cordis
+  lineage:
+    blueprint: acryl.blank
+    blueprintVersion: 0.1.0
+  rows:
+    - id: brand
+      name: acryl-brand
+      config:
+        name: Outlay
+        tagline: Say what you spent. The books keep themselves.
+        accent: "#0b7285"
+        accentDark: "#66d9e8"
+    - id: acryl-plugin-context
+      name: acryl-plugin-context
+    - id: acryl-system-prompt
+      name: acryl-system-prompt
+    - id: "@acryl/ui"
+      name: "@acryl/ui"
+    - id: acryl-app-save
+      name: acryl-app-save
+    - id: acryl-plugin-hub
+      name: acryl-plugin-hub

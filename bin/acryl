@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Start Hishab:  bin/acryl web | desktop | cli   (flags: --port 3105)
+set -euo pipefail
+app="$(cd "$(dirname "$0")/.." && pwd)"
+exec node "/Users/rifat/Desktop/WorkDir/workspace/acryl_workspace/acryl/scripts/blank.mjs" "${1:-web}" --dir "$app" "${@:2}"

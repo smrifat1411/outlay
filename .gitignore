@@ -1,0 +1,4 @@
+# what the runtime keeps for this app
+.dsh/
+instance.json
+plugins/.store/
