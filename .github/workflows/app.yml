@@ -1,4 +1,4 @@
-name: "Hishab"
+name: "Outlay"
 
 on:
   push:
@@ -17,5 +17,11 @@ jobs:
           node-version: 24
       - name: The app definition is valid
         run: npx --yes --package @webboxes/blends-core@0.1 blends-validate blend.yaml
+      - name: The registry entry is valid
+        run: npx --yes --package @webboxes/blends-core@0.1 blends-validate registry/blends/smrifat1411.outlay/blend.yaml
+      - name: The registry entry matches the app's plugin source
+        run: |
+          node scripts/sync-registry.mjs
+          git diff --exit-code -- registry/blends
       - name: No secrets in the repository
         run: npx --yes --package @webboxes/app-persistence@0.1 acryl-secret-check .

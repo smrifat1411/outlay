@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Start Hishab:  bin/acryl web | desktop | cli   (flags: --port 3105)
+# Start Outlay:  bin/acryl web | desktop | cli   (flags: --port 3105)
+# ACRYL_LAUNCHER overrides the framework launcher recorded when this app was created.
 set -euo pipefail
 app="$(cd "$(dirname "$0")/.." && pwd)"
-exec node "/Users/rifat/Desktop/WorkDir/workspace/acryl_workspace/acryl/scripts/blank.mjs" "${1:-web}" --dir "$app" "${@:2}"
+launcher="${ACRYL_LAUNCHER:-/Users/rifat/Desktop/WorkDir/workspace/acryl_workspace/acryl/scripts/blank.mjs}"
+if [ ! -f "$launcher" ]; then
+  echo "outlay: ACRYL launcher not found at $launcher" >&2
+  echo "        set ACRYL_LAUNCHER=/path/to/acryl/scripts/blank.mjs (or run it from the ACRYL checkout)" >&2
+  exit 1
+fi
+exec node "$launcher" "${1:-web}" --dir "$app" "${@:2}"

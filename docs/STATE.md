@@ -22,6 +22,9 @@ one floating button away. Grown from the `acryl.blank` Blueprint.
 | `data/outlay.jsonl` | the books (one JSON object per line, git-ignored, the user's own data) |
 | `data/outlay.categories.json` | categories the user or the agent added (git-ignored) |
 | `data/outlay.budgets.json` | monthly budget per category, e.g. `{ "food": 300 }` (git-ignored) |
+| `registry/blends/smrifat1411.outlay/` | the ready-to-PR Blends-registry entry (Blueprint + vendored plugin source + README) |
+| `scripts/sync-registry.mjs` | copies `plugins/outlay` into that entry and syncs its version; CI fails on drift |
+| `docs/PUBLISH.md` | how to push the app, (optionally) npm-publish the plugin, and open the registry PR |
 | `AGENTS.md` | the conventions the in-app builder agent follows |
 
 ## Run it
@@ -90,5 +93,9 @@ the dashboard itself is registered as the `main` panel key `outlay` and the icon
   budget card then shows it with 0 spent); remove that budget separately.
 - No tests. The API was verified by hand and by a throwaway harness (GET, POST, update, delete,
   category, budget set/remove/validation, CSV).
-- Not listed in the official Blends registry yet: that needs the plugin published to npm and
-  a `registry/blends/app.outlay/blend.yaml` pull request to `acrylblends.github.io`.
+- The Blends-registry entry is **prepared and validated**, not listed: `registry/blends/smrifat1411.outlay/`
+  (Blueprint `smrifat1411.outlay`, category finance) passes `blends-validate`, and `docs/PUBLISH.md`
+  holds the exact `registry/index.json` object and PR steps. Listing is a human action: push this repo,
+  then open the pull request to `acrylblends.github.io`. The plugin does not need an npm publish for the
+  registry (the entry vendors its source); the npm name `outlay` is taken, so the separate plugin
+  marketplace would need a scope such as `@smrifat1411/outlay` (PUBLISH.md step 2).
