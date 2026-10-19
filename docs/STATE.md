@@ -88,14 +88,23 @@ Every mutation answers with the same whole view, so the UI never has to guess.
 
 ## UI today
 
-Sticky top bar (name, tagline, month, currency, CSV download, refresh) → four KPI cards →
-quick-add form → last-7-days bars + category donut → **Budgets** card (a bar per budgeted
-category, green/amber/red by `pct`, amount editable in place, remove, and a "set a budget"
-form for categories without one) → **Recurring** card (each rule's note, amount, day, next
-date; pause/resume and remove; an add form with note, amount, category and day) → filter
-toolbar (search, category, period) → entries grouped by day with inline edit and delete.
-A floating **Ask** button opens the assistant; the dashboard itself is registered as the
-`main` panel key `outlay` and the icon in `sidebar.panellist`, so the conversation stays optional.
+A modern dashboard, themed by the host's design tokens (light and dark), in one `client.js`
+with no build step:
+
+- **App bar** (sticky, blurred): logo tile, name and tagline; month, currency, CSV download, refresh.
+- **Hero card**: this month's total, the change versus last month, entry count, and a budget bar
+  (spent of total) on the right.
+- **Four stat tiles**: today, this week, per day (month spend / days elapsed), all-time entries.
+- **Two columns** (one column below ~1060px):
+  - left: **Add expense** card (amount, note, category, optional new category) and **Entries**
+    (search with `Cmd/Ctrl+K`, segmented period All/Month/Week/Today, category chips with a
+    colour dot and a Clear action, day-grouped rows with time, category and amount; inline edit
+    and delete on hover);
+  - right: **Last 7 days** bars, **Where it goes** donut, **Budgets** (bar per category,
+    green/amber/red by `pct`, amount editable in place, remove, add form), **Recurring**
+    (note, category, day, next date; pause/resume, remove, add form).
+- A floating **Ask** pill opens the assistant; the dashboard is registered as the `main` panel
+  key `outlay` and the icon in `sidebar.panellist`, so the conversation stays optional.
 
 ## Known gaps / next steps
 
@@ -103,8 +112,10 @@ A floating **Ask** button opens the assistant; the dashboard itself is registere
   the Electron advanced shell (`acryl-app-shell`, right column), not the Web upstream slots.
 - No multi-currency. Removing a category leaves its budget behind (the budget card then shows it
   with 0 spent); remove that budget separately.
-- No tests. The API was verified by hand and by a throwaway harness (GET, POST, update, delete,
-  category, budget set/remove/validation, recurring add/catch-up/idempotence/pause/remove/validation, CSV).
+- No automated tests. The API was verified by hand and by a throwaway harness (GET, POST, update,
+  delete, category, budget set/remove/validation, recurring catch-up/idempotence/pause/remove,
+  CSV); the client bundle was checked by parsing plus a stubbed render smoke test, not a browser
+  screenshot test.
 - The Blends-registry entry is **prepared and validated**, not listed: `registry/blends/smrifat1411.outlay/`
   (Blueprint `smrifat1411.outlay`, category finance) passes `blends-validate`, and `docs/PUBLISH.md`
   holds the exact `registry/index.json` object and PR steps. Listing is a human action: push this repo,

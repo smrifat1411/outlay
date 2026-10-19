@@ -26,7 +26,7 @@ git push
 ```
 
 Check: <https://github.com/smrifat1411/outlay> shows the latest commit
-`Add monthly budgets and CSV export`.
+`Redesign the dashboard as a modern app shell`.
 
 ## 2. Optional: the plugin marketplace (npm)
 
@@ -46,7 +46,9 @@ Do not paste npm tokens in a chat or commit them.
 ## 3. The Blends registry pull request (opened)
 
 **Done:** fork `smrifat1411/acrylblends.github.io`, branch `add-outlay`, PR
-<https://github.com/acrylblends/acrylblends.github.io/pull/5> — open, awaiting review. The steps
+<https://github.com/acrylblends/acrylblends.github.io/pull/5> — open, awaiting review. It was
+opened at 0.2.0; before pushing a newer version, bump `version` in the entry's `index.json`
+object below and in the entry's `blend.yaml` (the registry CI fails on a stale index). The steps
 below are how to repeat it for a new version.
 
 The registry lives in [acrylblends/acrylblends.github.io](https://github.com/acrylblends/acrylblends.github.io).
@@ -70,11 +72,11 @@ cp -R "/Users/rifat/Desktop/untitled folder/outlay/registry/blends/smrifat1411.o
       "id": "smrifat1411.outlay",
       "name": "Outlay",
       "kind": "Blueprint",
-      "version": "0.2.0",
+      "version": "0.4.0",
       "path": "blends/smrifat1411.outlay",
       "license": "MIT",
       "category": "finance",
-      "description": "Say what you spent; the agent writes it down. Today, this week, this month, per category and against monthly budgets, with CSV export.",
+      "description": "Say what you spent; the agent writes it down. A modern dashboard: today, this week and this month, per category, against monthly budgets, with recurring rules that post themselves and CSV export.",
       "parent": "acryl.blank"
     }
 ```
