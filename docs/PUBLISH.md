@@ -76,7 +76,7 @@ cp -R "/Users/rifat/Desktop/untitled folder/outlay/registry/blends/smrifat1411.o
       "path": "blends/smrifat1411.outlay",
       "license": "MIT",
       "category": "finance",
-      "description": "Say what you spent; the agent writes it down. A modern dashboard: today, this week and this month, per category, against monthly budgets, with recurring rules that post themselves and CSV export.",
+      "description": "Say what you spent; the agent writes it down. A modern dashboard for today, this week and this month, per category, against monthly budgets, with recurring rules that post themselves and CSV export.",
       "parent": "acryl.blank"
     }
 ```
