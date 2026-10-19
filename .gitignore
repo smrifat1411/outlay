@@ -2,3 +2,6 @@
 .dsh/
 instance.json
 plugins/.store/
+
+# the user's own books, not the app
+data/
