@@ -43,7 +43,11 @@ for that, the plugin package needs a free name and catalog metadata:
 
 Do not paste npm tokens in a chat or commit them.
 
-## 3. The Blends registry pull request
+## 3. The Blends registry pull request (opened)
+
+**Done:** fork `smrifat1411/acrylblends.github.io`, branch `add-outlay`, PR
+<https://github.com/acrylblends/acrylblends.github.io/pull/5> — open, awaiting review. The steps
+below are how to repeat it for a new version.
 
 The registry lives in [acrylblends/acrylblends.github.io](https://github.com/acrylblends/acrylblends.github.io).
 Its `registry/README.md` is the authority; this is the step-by-step for this entry.

@@ -99,3 +99,6 @@ the dashboard itself is registered as the `main` panel key `outlay` and the icon
   then open the pull request to `acrylblends.github.io`. The plugin does not need an npm publish for the
   registry (the entry vendors its source); the npm name `outlay` is taken, so the separate plugin
   marketplace would need a scope such as `@smrifat1411/outlay` (PUBLISH.md step 2).
+  The pull request is open: <https://github.com/acrylblends/acrylblends.github.io/pull/5>
+  (fork `smrifat1411/acrylblends.github.io`, branch `add-outlay`); the registry's own
+  `registry-index.ts --check` and `blends-validate` both pass. Listing completes when it merges.
