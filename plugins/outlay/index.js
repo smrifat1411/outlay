@@ -1,14 +1,18 @@
-// outlay (host half): the agent's hands on the books.
-// Two tools the model calls (outlay_add, outlay_list) and one read-only HTTP route the
-// browser panel fetches. Data is one append-only file: <app home>/data/outlay.jsonl
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
+// outlay (host half): the agent's hands on the books, and the dashboard's own API.
+// Tools the model calls (outlay_add, outlay_list, outlay_remove) plus three read/write
+// routes the dashboard uses. Data is one append-only file: <app home>/data/outlay.jsonl
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export const name = 'outlay'
 export const inject = ['tools', 'webServer']
 
 export const CATEGORIES = ['food', 'travel', 'bills', 'shopping', 'health', 'fun', 'other']
+
+const MAX_BODY = 64 * 1024
+const MAX_NOTE = 200
 
 /** Where the books live: the app's own folder, never the plugin's code folder. */
 function dataFile(ctx) {
@@ -30,7 +34,10 @@ function readEntries(ctx) {
     if (text === '') continue
     try {
       const entry = JSON.parse(text)
-      if (typeof entry?.amount === 'number') entries.push(entry)
+      if (typeof entry?.amount === 'number' && entry.amount > 0) {
+        if (typeof entry.id !== 'string') entry.id = randomUUID()
+        entries.push(entry)
+      }
     } catch {
       // A half-written line is skipped, never fatal.
     }
@@ -38,12 +45,39 @@ function readEntries(ctx) {
   return entries
 }
 
+function writeEntries(ctx, entries) {
+  const file = dataFile(ctx)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join('\n') + (entries.length === 0 ? '' : '\n'))
+}
+
+function addEntry(ctx, input) {
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be a positive number')
+  const note = String(input.note ?? '').trim().slice(0, MAX_NOTE)
+  if (note === '') throw new Error('note is required')
+  const category = CATEGORIES.includes(String(input.category)) ? String(input.category) : 'other'
+  const entry = { id: randomUUID(), ts: new Date().toISOString(), amount: Math.round(amount * 100) / 100, note, category }
+  const file = dataFile(ctx)
+  mkdirSync(dirname(file), { recursive: true })
+  appendFileSync(file, `${JSON.stringify(entry)}\n`)
+  return entry
+}
+
+function removeEntry(ctx, id) {
+  const entries = readEntries(ctx)
+  const next = entries.filter(entry => entry.id !== id)
+  if (next.length === entries.length) throw new Error('no entry with that id')
+  writeEntries(ctx, next)
+  return next.length
+}
+
 function dayKey(date) {
   const d = new Date(date)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-/** Totals the panel and the agent both read: today, this week (from Monday), this month, and by category. */
+/** Everything the dashboard reads: totals, per-category, and the last seven days. */
 function summary(entries) {
   const now = new Date()
   const today = dayKey(now)
@@ -51,8 +85,9 @@ function summary(entries) {
   monday.setDate(now.getDate() - ((now.getDay() + 6) % 7))
   const weekStart = dayKey(monday)
   const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const totals = { today: 0, week: 0, month: 0, all: 0 }
+  const totals = { today: 0, week: 0, month: 0, all: 0, count: entries.length }
   const byCategory = {}
+  const byDay = {}
   for (const entry of entries) {
     const key = dayKey(entry.ts ?? Date.now())
     totals.all += entry.amount
@@ -61,8 +96,16 @@ function summary(entries) {
     if (key.startsWith(monthStart)) totals.month += entry.amount
     const category = typeof entry.category === 'string' && entry.category !== '' ? entry.category : 'other'
     byCategory[category] = (byCategory[category] ?? 0) + entry.amount
+    byDay[key] = (byDay[key] ?? 0) + entry.amount
   }
-  return { totals, byCategory }
+  const days = []
+  for (let back = 6; back >= 0; back -= 1) {
+    const d = new Date(now)
+    d.setDate(now.getDate() - back)
+    const key = dayKey(d)
+    days.push({ day: key, amount: byDay[key] ?? 0 })
+  }
+  return { totals, byCategory, days }
 }
 
 function money(amount, currency) {
@@ -81,8 +124,35 @@ function brief(entries, currency) {
   ].join('\n')
 }
 
+function sendJson(res, status, value) {
+  const body = JSON.stringify(value)
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+function readJson(req) {
+  return new Promise((resolveBody, rejectBody) => {
+    let size = 0
+    const chunks = []
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY) { rejectBody(new Error('body too large')); req.destroy(); return }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      if (chunks.length === 0) return resolveBody({})
+      try { resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8'))) } catch { rejectBody(new Error('body must be JSON')) }
+    })
+    req.on('error', rejectBody)
+  })
+}
+
 export function apply(ctx, config) {
   const currency = currencyOf(config)
+  const view = () => {
+    const entries = readEntries(ctx)
+    return { currency, entries: entries.slice(-200), ...summary(entries) }
+  }
 
   ctx.tools.register(defineTool({
     name: 'outlay_add',
@@ -93,24 +163,15 @@ export function apply(ctx, config) {
       category: { type: 'string', description: `One of: ${CATEGORIES.join(', ')}. Guess from the note; use other when unsure.` },
     },
     output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
-    async execute(args, exec) {
-      const amount = Number(args.amount)
-      if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be a positive number')
-      const note = String(args.note ?? '').trim()
-      if (note === '') throw new Error('note is required')
-      const category = CATEGORIES.includes(String(args.category)) ? String(args.category) : 'other'
-      const cwd = exec?.agent?.session?.header?.cwd
-      const entry = { ts: new Date().toISOString(), amount, note, category, ...(typeof cwd === 'string' ? { cwd } : {}) }
-      const file = dataFile(ctx)
-      mkdirSync(dirname(file), { recursive: true })
-      appendFileSync(file, `${JSON.stringify(entry)}\n`)
-      return `Saved ${money(amount, currency)} (${category}) - ${note}\n${brief(readEntries(ctx), currency)}`
+    async execute(args) {
+      const entry = addEntry(ctx, args)
+      return `Saved ${money(entry.amount, currency)} (${entry.category}) - ${entry.note}\n${brief(readEntries(ctx), currency)}`
     },
   }))
 
   ctx.tools.register(defineTool({
     name: 'outlay_list',
-    description: 'Read the books: recent expenses and the totals for today, this week and this month.',
+    description: 'Read the books: recent expenses (with their ids) and the totals for today, this week and this month.',
     parameters: {
       limit: { type: 'number', description: 'How many recent entries to show (default 15, max 50)' },
     },
@@ -120,20 +181,62 @@ export function apply(ctx, config) {
       const entries = readEntries(ctx)
       if (entries.length === 0) return 'The books are empty. Tell me an expense and I will add it.'
       const recent = entries.slice(-limit).reverse()
-        .map(entry => `${dayKey(entry.ts)}  ${money(entry.amount, currency).padStart(9)}  ${entry.category}  ${entry.note}`)
+        .map(entry => `${dayKey(entry.ts)}  ${money(entry.amount, currency).padStart(9)}  ${entry.category.padEnd(9)} ${entry.note}  [${entry.id.slice(0, 8)}]`)
       return [brief(entries, currency), '', `Last ${recent.length}:`, ...recent].join('\n')
     },
   }))
 
-  // The browser panel reads this; nothing else writes it, so the route is read-only.
+  ctx.tools.register(defineTool({
+    name: 'outlay_remove',
+    description: 'Delete one wrong expense by the id shown in outlay_list (its first 8 characters are enough).',
+    parameters: {
+      id: { type: 'string', required: true, description: 'The entry id, or its first 8 characters' },
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    async execute(args) {
+      const wanted = String(args.id ?? '').trim()
+      if (wanted === '') throw new Error('id is required')
+      const match = readEntries(ctx).find(entry => entry.id === wanted || entry.id.startsWith(wanted))
+      if (match === undefined) throw new Error(`no entry matches ${wanted}`)
+      removeEntry(ctx, match.id)
+      return `Removed ${money(match.amount, currency)} (${match.category}) - ${match.note}\n${brief(readEntries(ctx), currency)}`
+    },
+  }))
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/api/outlay/entries',
-    handler: (_req, res) => {
-      const entries = readEntries(ctx)
-      const body = JSON.stringify({ currency, entries: entries.slice(-50), ...summary(entries) })
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-      res.end(body)
+    handler: (req, res) => {
+      if (req.method === 'GET') return sendJson(res, 200, view())
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'GET or POST' })
+      readJson(req)
+        .then((body) => {
+          try {
+            addEntry(ctx, body)
+            sendJson(res, 200, view())
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+          }
+        })
+        .catch(error => sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) }))
     },
   }), 'outlay: entries route')
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/api/outlay/delete',
+    handler: (req, res) => {
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' })
+      readJson(req)
+        .then((body) => {
+          try {
+            removeEntry(ctx, String(body.id ?? ''))
+            sendJson(res, 200, view())
+          } catch (error) {
+            sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
+          }
+        })
+        .catch(error => sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) }))
+    },
+  }), 'outlay: delete route')
 }
